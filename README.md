@@ -19,3 +19,10 @@ pde_direct.f90 depends on HSL's MA38 code and a BLAS library, e.g. https://githu
 ```sh
 gfortran -o pde_direct pde_direct.f90 libma38.a libopenblas.a
 ```
+
+Command line arguments for both codes are ```which_problem``` (i.e. ```steady``` or ```dynamic```), ```nt```, and ```nx``` (the number of time and space discretization points). ```nt``` must be provided even if the problem is ```steady```, but it can be anything. 
+For example:
+
+```sh
+./pde dynamic 100 100
+```
