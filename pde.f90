@@ -1,11 +1,264 @@
-        program main
+      module util
+      implicit none
+      external pmgmres_ilu_cr
+
+      contains
+
+        subroutine dense2csr(A,n,m,ia,ja,nza,nz_tol)
+          ! Convert dense-represented matrix A to a csr representation 
+          integer(4), intent(in) :: n, m
+          real(8), intent(in) :: A(:,:)
+          real(8), intent(in) :: nz_tol
+          integer(4), intent(out) :: ia(:), ja(:)
+          real(8), intent(out) :: nza(:)
+          integer(4) :: i, j, nnz, ntmp
+
+          nnz = 0
+          ia(1) = 1
+          do i=1,n
+          do j=1,m
+            if (abs(A(i,j)).gt.nz_tol) then
+              ntmp = nnz
+              nnz = ntmp + 1
+              ja(nnz) = j
+              nza(nnz) = A(i,j)
+            endif
+          enddo
+            ia(i+1) = nnz + 1
+          enddo
+        end subroutine
+
+        subroutine get_nnz(A,n,m,nz_tol,nnz)
+          ! Get number of nonzeros of dense-represented matrix A
+          integer(4), intent(in) :: n, m
+          real(8), intent(in) :: A(:,:)
+          real(8), intent(in) :: nz_tol
+          integer(4), intent(out) :: nnz
+          integer(4) :: ntmp, i, j
+
+          nnz = 0
+          do i=1,n
+          do j=1,m
+            if (abs(A(i,j)).gt.nz_tol) then
+              ntmp = nnz
+              nnz = ntmp + 1
+            endif
+          enddo
+          enddo
+        end subroutine
+
+        subroutine newton(x0, x, newton_tol, newton_iter,&
+                          nx, hx, k1, k2, H1, H2, H3, u_bc, v_bc, w_bc)
+        real(8), intent(in) :: hx, k1, k2, &
+                               H1, H2, H3, u_bc, v_bc, w_bc
+        integer(4), intent(in) :: nx
+        real(8), intent(in) :: x0(:), newton_tol
+        integer(4), intent(in) :: newton_iter
+        real(8), intent(out) :: x(:)
+        real(8), dimension(size(x0), size(x0)) :: Jf
+        real(8), dimension(size(x0)) :: f, x_new, b_vec
+        real(8), dimension(size(x0)) :: search_d
+        real(8) :: norm_f, norm_fprev
+        real(8) :: alf
+        integer(4) :: k, i, n, nnz
+        real(8), allocatable :: nza(:)
+        integer(4), allocatable :: ia(:), ja(:)
+        write(*,'(a)') "Beginning Newton's method"
+        n=size(x0)
+        alf = 1
+        x = x0
+
+        call get_Jfx1(x, f, Jf,&
+                      nx, hx, k1, k2, H1, H2, H3, u_bc, v_bc, w_bc)
+        call get_nnz(Jf,n,n,1.0D-8,nnz)
+        allocate(nza(nnz))
+        allocate(ja(nnz))
+        allocate(ia(n+1))
+        call dense2csr(Jf,n,n,ia,ja,nza,1.0D-8)
+                      
+        norm_fprev = sqrt(dot_product(f,f))
+        do k=1,newton_iter
+          write(*,'(a,i0)') 'Entering Newton iteration ', k
+          b_vec = -f
+          call pmgmres_ilu_cr(n, nnz, ia, ja, nza, search_d, &
+                             b_vec, 20, 20, 1.0D-8, 1.0D-8)
+          x_new = x + search_d
+          call get_Jfx1(x_new, f, Jf,&
+                        nx, hx, k1, k2, H1, H2, H3, u_bc, v_bc, w_bc)
+          call get_nnz(Jf,n,n,1.0D-8,nnz)
+          call dense2csr(Jf,n,n,ia,ja,nza,1.0D-8)
+          !do i=1,n
+          !write(*,*) x(i)
+          !enddo
+          norm_f = sqrt(dot_product(f,f))
+          write(*,'(a,E12.4)') 'Initial ||f(x)|| = ', norm_f
+          alf = 1
+          do i=1,20
+          if (norm_f.ge.norm_fprev) then
+            alf = alf/2
+            x_new = x + search_d/alf
+            call get_Jfx1(x_new, f, Jf,&
+                        nx, hx, k1, k2, H1, H2, H3, u_bc, v_bc, w_bc)
+            norm_f = sqrt(dot_product(f,f))
+            write(*,'(a,E12.4)') 'Cut alpha, ||f(x)|| = ', norm_f
+
+            cycle
+          else
+            write(*,'(a,E8.1)') 'Accepted iterate with alpha = ', alf
+            exit
+          endif
+          enddo
+
+          if (norm_f.ge.norm_fprev) then
+            write(*,'(a,i0)') 'Error: Line search failed at iterate ',k
+            return
+          endif
+          norm_fprev = norm_f
+          write(*,'(a,E12.4)') "||f(x)|| = ", norm_f
+
+          ! calculate search direction
+          ! update x
+          ! recalculate Jfx
+          ! convert to CSR
+          if (norm_f.lt.newton_tol) then
+             write(*,'(a)') "Newton's method terminated successfully"
+             write(*,'(a,E12.4)') "||f(x)|| = ", norm_f
+             return
+           endif
+        enddo
+        write(*,'(a)') "Newton's method reached max iteration"
+        write(*,'(a,E12.4)') "||f(x)|| = ", norm_f
+        
+
+        end subroutine newton
+
+        subroutine get_Jfx1(x, f, Jf,&
+                           nx, hx, k1, k2, H1, H2, H3, u_bc, v_bc, w_bc)
+        real(8), intent(in) :: x(:)
+        real(8), intent(out), dimension(size(x),size(x)) :: Jf
+        real(8), intent(out), dimension(size(x)) :: f
+        real(8), intent(in) :: hx, k1, k2, &
+                               H1, H2, H3, u_bc, v_bc, w_bc
+        integer(4), intent(in) :: nx
+        integer(4) :: i, eq, n
+        n = size(x)
+        
+        f = 0
+        Jf = 0
+
+        f(1) = 1/hx*(x(3)-x(1)) - k2*x(1)**1 + k1*u_bc**2
+        f(2) = 1/(2*hx)*(x(5)-u_bc) - k1*x(2)**2 + k2*x(3)**1
+        f(3) = 1/(2*hx)*(x(6)-x(1)) + k1*x(2)**2 - k2*x(3)**1
+        f(4) = 1/(2*hx)*(x(7)-w_bc) + H1*k1*x(2)**2 - &
+                                      H2*k2*x(3)**1 - H3*x(4)
+        do i=2,nx
+          eq = 3*i - 1
+          f(eq) = 1/(2*hx)*(x(eq+3)-x(eq-3)) - k1*x(eq)**2 + &
+                                               k2*x(eq+1)**1
+          eq = 3*i
+          f(eq) = 1/(2*hx)*(x(eq+3)-x(eq-3)) + k1*x(eq-1)**2 - &
+                                               k2*x(eq)**1
+          eq = 3*i + 1
+          f(eq) = 1/(2*hx)*(x(eq+3)-x(eq-3)) + H1*k1*x(eq-2)**2 -&
+                                               H2*k2*x(eq-1)**1 -&
+                                               H3*x(eq)
+        enddo
+        f(n-4) = 1/(2*hx)*(x(n-1)-x(n-7)) - k1*x(n-4)**2 + &
+                                             k2*x(n-3)**1
+        f(n-3) = 1/(2*hx)*(v_bc-x(n-6)) + k1*x(n-4)**2 - &
+                                             k2*x(n-3)**1
+        f(n-2) = 1/(2*hx)*(x(n)-x(n-5)) + H1*k1*x(n-4)**2 -&
+                                             H2*k2*x(n-3)**1 -&
+                                             H3*x(n-2)
+        f(n-1) = 1/(2*hx)*(x(n-1)-x(n-4)) - k1*x(n-1)**2 + &
+                                             k2*v_bc**1
+        f(n) = 1/(2*hx)*(x(n)-x(n-2)) + H1*k1*x(n-1)**2 -&
+                                             H2*k2*v_bc**1 -&
+                                             H3*x(n)
+
+        ! initialize system at lower boundary (v only)
+        Jf(1,1) = -1/hx - k2*1
+        Jf(1,3) = 1/hx
+        ! initialize system at upper boundary (u, w only)
+        Jf(n-1,n-1) = 1/hx - k1*2*x(n-1)**1
+        Jf(n-1,n-4) = -1/hx 
+        Jf(n,n) = 1/hx - H3
+        Jf(n,n-2) = -1/hx
+        Jf(n,n-1) = 2*k1*H1*x(n-1)**1
+
+        ! 
+        Jf(2,2) = -k1*2*x(2)**1
+        Jf(2,3) = k2*1
+        Jf(2,5) = 1/(2*hx)
+
+        Jf(3,3) = -k2*1
+        Jf(3,2) = k1*2*x(2)**1
+        Jf(3,1) = -1/(2*hx)
+        Jf(3,6) = 1/(2*hx)
+
+        Jf(4,4) = -H3
+        Jf(4,2) = k1*H1*2*x(2)**1
+        Jf(4,3) = -k2*H2*1
+        Jf(4,7) = 1/(2*hx)
+
+        Jf(n-4,n-4) = -k1*2*x(n-4)**1
+        Jf(n-4,n-3) = k2*1
+        Jf(n-4,n-7) = -1/(2*hx)
+        Jf(n-4,n-1) = 1/(2*hx)
+
+        Jf(n-3,n-3) = -k2*1
+        Jf(n-3,n-4) = k1*2*x(n-4)**1
+        Jf(n-3,n-6) = -1/(2*hx)
+
+        Jf(n-2,n-2) = -H3
+        Jf(n-2,n-4) = k1*H1*2*x(n-4)**1
+        Jf(n-2,n-3) = -k2*H2*1
+        Jf(n-2,n) = 1/(2*hx)
+        Jf(n-2,n-5) = -1/(2*hx)
+
+        ! fill in rest (interior elements) of matrix
+        do i=2,nx-2
+          ! u
+          eq = 1 + 3*i - 2
+          Jf(eq, eq) = -k1*2*x(eq)**1
+          Jf(eq, eq+1) = k2*1
+          Jf(eq, eq+3) = 1/(2*hx)
+          Jf(eq, eq-3) = -1/(2*hx)
+
+          ! v
+          eq = 1 + 3*i - 1
+          Jf(eq, eq) = -k2*1
+          Jf(eq, eq-1) = k1*2*x(eq-1)**1
+          Jf(eq, eq+3) = 1/(2*hx)
+          Jf(eq, eq-3) = -1/(2*hx)
+
+          ! w
+          eq = 1 + 3*i
+          Jf(eq, eq) = -H3
+          Jf(eq, eq-2) = k1*H1*2*x(eq-2)**1
+          Jf(eq, eq-1) = -k2*H2*1
+          Jf(eq, eq+3) = 1/(2*hx)
+          Jf(eq, eq-3) = -1/(2*hx)
+        enddo
+
+        end subroutine get_Jfx1
+
+      end module util
+
+      program main
+        use util
         implicit none
 
-        real(8) :: k1 = 2, k2 = 1, H1 = 10, H2 = 1, H3 = 3
+        real(8) :: k1 = 2, k2 = 1, H1 = 10, H2 = 1, H3 = 5
         real(8) :: u_bc = 1, v_bc = 1, w_bc = 1
         real(8) :: u_ic = 0, v_ic = 0, w_ic = 1
         real(8) :: ht, hx
         real(8) :: nz_tol, tol_rel, tol_abs, resid_norm, b_norm
+
+        real(8) :: newton_tol
+        integer(4) :: newton_iter
+        real(8), allocatable :: init_guess(:)
+
         
         real(8), allocatable :: u(:,:), v(:,:), w(:,:)
         real(8), allocatable :: rhs_matrix(:,:), rhs_vector(:)
@@ -50,6 +303,18 @@
         do i=1,nvar_x
           identity(i,i) = 1
         enddo
+
+        if (which_problem.eq.'nonlinear1') then
+          allocate(x_estimate(nvar_x))
+          allocate(init_guess(nvar_x))
+          init_guess = 1
+          newton_tol = 1.0D-8
+          newton_iter = 20
+          call newton(init_guess, x_estimate, newton_tol, newton_iter,&
+                      nx, hx, k1, k2, H1, H2, H3, u_bc, v_bc, w_bc)
+
+          stop
+        endif
 
         rhs_matrix = 0
         rhs_vector = 0
@@ -225,47 +490,5 @@
         deallocate (rhs_matrix)
         contains
 
-        subroutine get_nnz(A,n,m,nz_tol,nnz)
-          ! Get number of nonzeros of matrix A        
-          integer(4), intent(in) :: n, m
-          real(8), intent(in) :: A(:,:)
-          real(8), intent(in) :: nz_tol
-          integer(4), intent(out) :: nnz
-          integer(4) :: ntmp
 
-          nnz = 0
-          do i=1,n
-          do j=1,m
-            if (abs(A(i,j)).gt.nz_tol) then
-              ntmp = nnz
-              nnz = ntmp + 1
-            endif
-          enddo
-          enddo
-        end subroutine
-
-        subroutine dense2csr(A,n,m,ia,ja,nza,nz_tol)
-          ! Convert dense-represented matrix A to a csr representation 
-          integer(4), intent(in) :: n, m
-          real(8), intent(in) :: A(:,:)
-          real(8), intent(in) :: nz_tol
-          integer(4), intent(out) :: ia(:), ja(:)
-          real(8), intent(out) :: nza(:)
-          integer(4) :: i, j, nnz, ntmp
-
-          nnz = 0
-          ia(1) = 1
-          do i=1,n
-          do j=1,m
-            if (abs(A(i,j)).gt.nz_tol) then
-              ntmp = nnz
-              nnz = ntmp + 1
-              ja(nnz) = j
-              nza(nnz) = A(i,j)
-            endif
-          enddo
-            ia(i+1) = nnz + 1
-          enddo
-        end subroutine
-
-        end program
+      end program
